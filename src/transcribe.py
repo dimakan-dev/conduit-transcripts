@@ -1,6 +1,5 @@
 """Use Whisper to transcribe audio files to text."""
 
-from os import name
 import json
 import pathlib
 import re
@@ -15,6 +14,7 @@ import typer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rich.progress import track
 from rich.prompt import Confirm
+from transcriber import HybridTranscriber
 from url_finder import fetch_latest_episode_number, get_audio_url_from_episode_number
 from rss_parser import (
     parse_rss_feed,
@@ -59,6 +59,7 @@ def _get_whisper_model():
 
 
 app = typer.Typer()
+transcriber = HybridTranscriber(model="base", prefer_mlx=True)
 splitter = RecursiveCharacterTextSplitter(
     chunk_size=300,
     separators=[".", "!", "?", "\n"],
@@ -94,7 +95,7 @@ def download_audio_file(url: str) -> str:
             final_url = str(response.url)
             if final_url != url:
                 typer.echo(f"Redirected to: {final_url}")
-            
+
             typer.echo(f"Saving audio file to {f.name}")
             for chunk in response.iter_bytes():
                 f.write(chunk)
@@ -102,22 +103,21 @@ def download_audio_file(url: str) -> str:
         return f.name
 
 
-def transcribe_audio_file(audio_file: pathlib.Path) -> dict:
-    """Transcribe an audio file and return full Whisper result with text and segments"""
-    model = _get_whisper_model()
-    # _whisper_module is guaranteed to be set if _get_whisper_model() succeeded
-    whisper = _whisper_module
-    
-    audio = whisper.load_audio(str(audio_file))
-    transcription = model.transcribe(audio=audio, verbose=False)
+def transcribe_audio_file(
+    audio_file: pathlib.Path, with_segments: bool = False
+) -> dict:
+    """Transcribe an audio file.
 
-    return transcription
-
-
-def transcribe_audio_file_text_only(audio_file: pathlib.Path) -> str:
-    """Transcribe an audio file to text (backward compatibility)"""
-    transcription = transcribe_audio_file(audio_file)
-    return transcription["text"]
+    When ``with_segments`` is True, uses OpenAI Whisper so segment timestamps are
+    available. Otherwise uses the MLX/Whisper hybrid (faster on Apple Silicon).
+    """
+    if with_segments:
+        model = _get_whisper_model()
+        whisper = _whisper_module
+        audio = whisper.load_audio(str(audio_file))
+        return model.transcribe(audio=audio, verbose=False)
+    text = transcriber.transcribe(audio_file)
+    return {"text": text, "segments": []}
 
 
 @app.command(name="file")
@@ -131,20 +131,22 @@ def transcribe_file(
         typer.Option("--output", exists=True, file_okay=True, dir_okay=False),
     ] = None,
 ):
-
-    transcription = transcribe_audio_file(audio_file=input_file)
+    transcription = transcribe_audio_file(audio_file=input_file, with_segments=False)
     if not output_file:
         output_file = input_file.absolute().with_suffix(".txt")
 
     return output_file.write_text(transcription["text"])
 
 
-def transcribe_from_audio_url(audio_url: str) -> dict:
-    """Transcribe audio from URL and return full Whisper result with text and segments"""
+def transcribe_from_audio_url(
+    audio_url: str, with_timestamps: bool = False
+) -> dict:
+    """Transcribe audio from URL; includes Whisper segments when ``with_timestamps``."""
     typer.echo(f"Transcribing audio from {audio_url}")
     audio_file_path = download_audio_file(audio_url)
-    transcription = transcribe_audio_file(pathlib.Path(audio_file_path))
-    # Clean up temporary file
+    transcription = transcribe_audio_file(
+        pathlib.Path(audio_file_path), with_segments=with_timestamps
+    )
     pathlib.Path(audio_file_path).unlink()
     return transcription
 
@@ -226,7 +228,9 @@ def transcribe_from_episode_number(
             typer.echo(f"Skipping episode {episode_number}: {output_file} already exists")
             continue
         
-        transcription_result = transcribe_from_audio_url(audio_url)
+        transcription_result = transcribe_from_audio_url(
+            audio_url, with_timestamps=with_timestamps
+        )
         transcription_text = transcription_result["text"]
         
         # Only extract and store segments if with_timestamps is enabled
@@ -306,7 +310,9 @@ def transcribe_from_rss(
             typer.echo(f"Skipping latest episode: {output_file} already exists")
             return
         
-        transcription_result = transcribe_from_audio_url(audio_url)
+        transcription_result = transcribe_from_audio_url(
+            audio_url, with_timestamps=with_timestamps
+        )
         transcription_text = transcription_result["text"]
         
         # Only extract and store segments if with_timestamps is enabled
@@ -338,7 +344,9 @@ def transcribe_from_rss(
                     typer.echo(f"Skipping episode: {output_file} already exists")
                     continue
                 
-                transcription_result = transcribe_from_audio_url(audio_url)
+                transcription_result = transcribe_from_audio_url(
+                    audio_url, with_timestamps=with_timestamps
+                )
                 transcription_text = transcription_result["text"]
                 
                 # Only extract and store segments if with_timestamps is enabled
@@ -383,7 +391,9 @@ def transcribe_from_rss(
             typer.echo(f"Skipping episode: {output_file} already exists")
             continue
         
-        transcription_result = transcribe_from_audio_url(audio_url)
+        transcription_result = transcribe_from_audio_url(
+            audio_url, with_timestamps=with_timestamps
+        )
         transcription_text = transcription_result["text"]
         
         # Only extract and store segments if with_timestamps is enabled
