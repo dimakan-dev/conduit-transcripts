@@ -220,6 +220,7 @@ def transcribe_from_episode_number(
     for episode_number in track(episode_numbers):
         metadata, audio_url = get_audio_url_from_episode_number(episode_number)
         output_file = get_output_file_path(metadata, show, with_timestamps=with_timestamps)
+        typer.echo(f"Episode {episode_number} -> {output_file.name}")
         
         if skip_if_exists and output_file.exists():
             typer.echo(f"Skipping episode {episode_number}: {output_file} already exists")
